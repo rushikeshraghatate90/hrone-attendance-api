@@ -1,9 +1,31 @@
-# REVIEW.md
+# Starter Code Review
 
-List every defect you found in the starter `app/main.py` (helpers and endpoints). For each one:
+## Defects Identified and Fixed
+
+The starter `app/main.py` supported basic employee and attendance operations, but several implementation issues could produce incorrect results or unexpected failures.
 
 | # | Where (function / line) | What is wrong | How you'd notice it (test, input, or symptom) | How you fixed it |
 |---|---|---|---|---|
-| 1 | | | | |
+| 1 | `list_employees()` | Pagination used `page * page_size` as the skip offset. This skipped the first page of records when `page=1`. The total count also ignored the department filter. | With 25 employees and `page_size=20`, the first page could omit the first 20 employees. Filtering by department could return an incorrect total. | Changed the offset to `(page - 1) * page_size` and applied the same filter to `count_documents()` and the employee query. |
+| 2 | `punch_in()` | The employee lookup result was not checked before accessing `emp["shift_start"]`. A nonexistent employee could cause an unhandled exception instead of a clear client error. | Submit a punch-in request with an unknown employee code. | Added `require_employee()` to check that the employee exists and return HTTP 404 when it does not. |
+| 3 | `punch_in()` | The timestamp was converted using the server's local timezone, and the calendar date was derived without explicitly applying the required IST timezone. Results could vary depending on the server environment or timestamps near midnight. | Submit a timestamp near midnight UTC and compare the stored attendance date with the corresponding IST date. | Added explicit UTC timestamp parsing, IST conversion, and attendance-date calculation through `epoch_ms_to_utc()` and `attendance_day()`. |
+| 4 | `punch_in()` | Duplicate attendance prevention depended on checking for an existing record before inserting. Concurrent requests could both pass the check and attempt to create the same employee/date record. | Send concurrent punch-in requests for the same employee and attendance date. | Added a unique compound index on `(emp_code, date)` and handled `DuplicateKeyError` with HTTP 409. |
+| 5 | `punch_in()` | A timestamp was selected using a truthiness check. A supplied value of `0` could be treated as if no timestamp had been provided, rather than being validated as input. | Submit `punched_at=0` and observe that the starter could silently use the current time. | Changed the logic to distinguish `None` from a supplied timestamp and added epoch-millisecond validation. |
+| 6 | `compute_late_minutes()` and `compute_overtime()` | Shift calculations replaced the time components of timestamps without consistently modelling the shift's timezone and date boundaries. This could produce incorrect calculations for timestamps around midnight or overnight shifts. | Test a punch-in near midnight or configure a shift that ends on the following calendar day. | Introduced explicit IST shift-boundary calculations with `shift_bounds()` and centralized derived attendance calculations in `compute_derived()`. |
+| 7 | `health()` | The endpoint returned `{"status": "ok"}` without checking whether MongoDB was reachable. The response could indicate a healthy service while database-dependent operations were failing. | Make MongoDB unavailable and call `GET /health`. | Added a MongoDB ping and return HTTP 503 when the database operation fails. |
+| 8 | `create_employee()` | Duplicate detection relied on a separate existence check before insertion. This was vulnerable to concurrent requests, and database failures were not translated into consistent API errors. | Submit duplicate employee codes concurrently or simulate a database operation failure. | Added a unique employee-code index, handled duplicate-key errors with HTTP 409, and translated PyMongo errors into HTTP 503 responses. |
+| 9 | Database access in the original endpoints | Database exceptions were not consistently handled, so connection or query failures could surface as unhandled server errors. | Trigger a database connection failure while calling an employee or attendance endpoint. | Added database error handling to the relevant database operations and return HTTP 503 for handled PyMongo failures. |
+| 10 | `list_attendance()` | The endpoint fetched all matching attendance records into Python, sorted them in memory, and then applied pagination. This could consume unnecessary memory and processing time as the collection grows. | Create a large number of attendance records and request a small page. Observe that the starter loads all matching records before returning the page. | Moved sorting, skipping, and limiting into the MongoDB query, and used `count_documents()` to obtain the total matching record count. |
 
-Also note anything you looked at and decided was **not** a defect, and why.
+## Items Reviewed That Were Not Classified as Defects
+
+- **Default pagination values:** The starter's default page size of 20 was reasonable. The defect was the incorrect offset calculation and inconsistent filtered count, not the default value itself.
+- **Default shift times:** The default shift of 09:30 to 18:30 was not inherently defective. The problem was the calculation of shift-related values, particularly timezone and date-boundary handling.
+- **HTTP 409 for duplicate records:** Returning a conflict response for duplicate employee codes or attendance records is appropriate API behavior. The issue was relying only on a pre-insert check instead of enforcing uniqueness at the database level.
+- **`GET /health` response shape:** The response `{"status": "ok"}` is a reasonable success response. The missing database availability check was the defect, not the response format.
+
+## Review Scope and Limitations
+
+This review records defects identified by comparing the starter `app/main.py` with the implemented version. The fixes listed above describe changes present in the implementation; they should not be interpreted as proof that every possible edge case has been tested.
+
+Additional endpoints and analytics logic were added during implementation. Those additions should be validated separately, and any remaining limitations should be documented after testing.
